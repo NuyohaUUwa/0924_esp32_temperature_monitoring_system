@@ -40,7 +40,7 @@ Web 监控看板 (dashboard.py)
 ### 1. 克隆或下载项目
 
 ```bash
-git clone <repository-url>
+git clone <[repository-url](https://github.com/NuyohaUUwa/0924_esp32_temperature_monitoring_system.git)>
 cd 0924_ESP32
 ```
 
