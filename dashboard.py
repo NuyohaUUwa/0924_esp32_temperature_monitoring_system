@@ -191,12 +191,38 @@ def dashboard():
             border-radius: 12px;
             padding: 20px;
             box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            border: 3px solid transparent;
+            transition: transform 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease;
         }
         
         .device-card:hover {
             transform: translateY(-5px);
             box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+        }
+        
+        .device-card.alerting {
+            border-color: #ef4444;
+            box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
+            animation: alertBorderPulse 2s infinite;
+            /* 确保背景色不变 */
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+        }
+        
+        .device-card.alerting:hover {
+            box-shadow: 0 4px 16px rgba(239, 68, 68, 0.5);
+            /* 悬停时背景色也不变 */
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+        }
+        
+        @keyframes alertBorderPulse {
+            0%, 100% {
+                border-color: #ef4444;
+                box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
+            }
+            50% {
+                border-color: #dc2626;
+                box-shadow: 0 2px 12px rgba(239, 68, 68, 0.5);
+            }
         }
         
         .device-id {
@@ -556,7 +582,7 @@ def dashboard():
             </div>
             <div class="control-group">
                 <label for="refreshInterval">自动刷新(秒):</label>
-                <input type="number" id="refreshInterval" min="5" max="300" value="30" onchange="updateRefreshInterval()">
+                <input type="number" id="refreshInterval" min="5" max="300" value="10" onchange="updateRefreshInterval()">
             </div>
         </div>
         
@@ -644,7 +670,7 @@ def dashboard():
         let allTelemetryData = {};
         let selectedDevices = [];
         let refreshIntervalId = null;
-        let currentRefreshInterval = 30000;
+        let currentRefreshInterval = 10000; // 默认10秒
         
         // 报警相关变量
         let deviceConfigs = {}; // 每个设备的配置 {deviceId: {threshold: 50, duration: 10}}
@@ -697,7 +723,17 @@ def dashboard():
             try {
                 // 加载设备信息
                 const deviceInfoResponse = await fetch('/api/device_status');
+                if (!deviceInfoResponse.ok) {
+                    const errorData = await deviceInfoResponse.json().catch(() => ({error: '未知错误'}));
+                    throw new Error(`设备信息加载失败: ${errorData.error || deviceInfoResponse.statusText}`);
+                }
                 const deviceInfo = await deviceInfoResponse.json();
+                
+                // 验证返回的数据格式
+                if (!Array.isArray(deviceInfo)) {
+                    throw new Error('设备信息格式错误：期望数组');
+                }
+                
                 allDevices = deviceInfo;
                 
                 // 初始化筛选列表（默认全选）
@@ -710,7 +746,17 @@ def dashboard():
                 
                 // 加载温度历史
                 const tempHistoryResponse = await fetch('/api/telemetry_recent');
+                if (!tempHistoryResponse.ok) {
+                    const errorData = await tempHistoryResponse.json().catch(() => ({error: '未知错误'}));
+                    throw new Error(`温度历史加载失败: ${errorData.error || tempHistoryResponse.statusText}`);
+                }
                 const tempHistory = await tempHistoryResponse.json();
+                
+                // 验证返回的数据格式
+                if (typeof tempHistory !== 'object' || tempHistory === null) {
+                    throw new Error('温度历史格式错误：期望对象');
+                }
+                
                 allTelemetryData = tempHistory;
                 
                 renderTemperatureCharts(tempHistory);
@@ -719,10 +765,11 @@ def dashboard():
                 checkTemperatureAlerts();
             } catch (error) {
                 console.error('加载数据失败:', error);
+                const errorMessage = error.message || '未知错误';
                 document.getElementById('device-info-container').innerHTML = 
-                    '<div class="loading">❌ 加载失败，请检查服务器连接</div>';
+                    `<div class="loading">❌ 加载失败，请检查服务器连接<br><small>${errorMessage}</small></div>`;
                 document.getElementById('temperature-charts-container').innerHTML = 
-                    '<div class="loading">❌ 加载失败，请检查服务器连接</div>';
+                    `<div class="loading">❌ 加载失败，请检查服务器连接<br><small>${errorMessage}</small></div>`;
             }
         }
         
@@ -738,8 +785,12 @@ def dashboard():
             container.innerHTML = devices.map(device => {
                 const config = getDeviceConfig(device.device_id);
                 const displayName = formatDeviceName(device.device_id);
+                
+                // 检查设备是否处于报警状态
+                const isAlerting = deviceAlertStatus[device.device_id]?.alerted === true;
+                
                 return `
-                <div class="device-card">
+                <div class="device-card ${isAlerting ? 'alerting' : ''}">
                     <div class="device-id">🔌 ${displayName}</div>
                     <div class="device-info">
                         <div class="info-item">
@@ -760,6 +811,12 @@ def dashboard():
                             <span class="info-label">状态</span>
                             <span class="status-badge ${device.status === 'online' ? 'status-online' : 'status-offline'}">
                                 ${device.status === 'online' ? '🟢 在线' : '🔴 离线'}
+                            </span>
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">实时温度</span>
+                            <span class="info-value" style="font-size: 1.1em; font-weight: bold; color: ${device.status === 'online' && device.current_temp !== null && device.current_temp !== undefined ? '#667eea' : '#999'}">
+                                ${device.status === 'online' && device.current_temp !== null && device.current_temp !== undefined ? device.current_temp.toFixed(2) + '°C' : '--'}
                             </span>
                         </div>
                         <div class="info-item info-item-full">
@@ -1102,6 +1159,7 @@ def dashboard():
         function checkTemperatureAlerts() {
             const currentTime = Date.now();
             const alertingDevices = [];
+            let needUpdateDisplay = false; // 标记是否需要更新显示
             
             // 遍历所有设备
             Object.keys(allTelemetryData).forEach(deviceId => {
@@ -1118,6 +1176,9 @@ def dashboard():
                 
                 // 获取最新温度（最后一条记录）
                 const latestTemp = deviceData.temps[deviceData.temps.length - 1];
+                
+                // 记录之前的报警状态
+                const wasAlerting = deviceAlertStatus[deviceId]?.alerted === true;
                 
                 if (latestTemp > threshold) {
                     // 温度超过阈值
@@ -1148,6 +1209,10 @@ def dashboard():
                     // 温度已降低，清除报警状态
                     if (deviceAlertStatus[deviceId]) {
                         delete deviceAlertStatus[deviceId];
+                        // 如果之前是报警状态，现在需要更新显示以移除红色边框
+                        if (wasAlerting) {
+                            needUpdateDisplay = true;
+                        }
                     }
                 }
             });
@@ -1155,6 +1220,9 @@ def dashboard():
             // 如果有设备需要报警，显示弹窗
             if (alertingDevices.length > 0) {
                 showAlert(alertingDevices);
+            } else if (needUpdateDisplay && allDevices.length > 0) {
+                // 如果有设备从报警状态恢复，更新显示以移除红色边框
+                renderDeviceInfo(allDevices);
             }
         }
         
@@ -1183,6 +1251,13 @@ def dashboard():
             // 显示弹窗
             alertPopup.classList.remove('hidden');
             alertOverlay.classList.remove('hidden');
+            
+            // 弹窗显示后，更新设备信息以显示红色边框（延迟执行，确保弹窗先显示）
+            if (allDevices.length > 0) {
+                setTimeout(() => {
+                    renderDeviceInfo(allDevices);
+                }, 100);
+            }
             
             // 播放提示音（浏览器需要用户交互才能播放声音，这里仅显示）
             const deviceNames = devices.map(d => formatDeviceName(d.deviceId)).join(', ');
@@ -1230,7 +1305,8 @@ def dashboard():
 
 @app.route("/api/device_status")
 def api_device_status():
-    """API: 获取设备状态列表"""
+    """API: 获取设备状态列表（包含实时温度）"""
+    conn = None
     try:
         conn = get_db_connection()
         with conn.cursor() as cur:
@@ -1250,25 +1326,48 @@ def api_device_status():
             rows = cur.fetchall()
             devices = []
             for row in rows:
+                device_id = row[0]
+                
+                # 获取该设备的最新温度
+                cur.execute("""
+                    SELECT temp_c, timestamp
+                    FROM telemetry
+                    WHERE device_id = %s AND temp_c IS NOT NULL
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                """, (device_id,))
+                
+                temp_row = cur.fetchone()
+                current_temp = None
+                if temp_row:
+                    current_temp = float(temp_row[0])
+                
                 devices.append({
-                    'device_id': row[0],
+                    'device_id': device_id,
                     'fw_version': row[1],
                     'ip': str(row[2]),  # 确保IP转换为字符串
                     'uptime_sec': row[3],
                     'status': row[4],
-                    'last_seen': row[5].isoformat() if row[5] else None
+                    'last_seen': row[5].isoformat() if row[5] else None,
+                    'current_temp': current_temp  # 实时温度
                 })
             
-            conn.close()
             return jsonify(devices)
             
     except Exception as e:
         logger.error(f"获取设备状态失败: {e}")
         return jsonify({'error': str(e)}), 500
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception as close_error:
+                logger.error(f"关闭数据库连接失败: {close_error}")
 
 @app.route("/api/telemetry_recent")
 def api_telemetry_recent():
     """API: 获取每个设备最近50条温度数据"""
+    conn = None
     try:
         conn = get_db_connection()
         with conn.cursor() as cur:
@@ -1316,12 +1415,17 @@ def api_telemetry_recent():
                         'full_timestamps': full_timestamps
                     }
             
-            conn.close()
             return jsonify(telemetry_data)
             
     except Exception as e:
         logger.error(f"获取温度历史失败: {e}")
         return jsonify({'error': str(e)}), 500
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception as close_error:
+                logger.error(f"关闭数据库连接失败: {close_error}")
 
 @app.route("/health")
 def health():
