@@ -4,7 +4,7 @@
 import os
 import logging
 import psycopg2
-from flask import Flask, render_template_string, jsonify
+from flask import Flask, render_template_string, jsonify, request
 from dotenv import load_dotenv
 
 # 加载环境变量
@@ -28,6 +28,29 @@ def get_db_connection():
     """获取数据库连接"""
     return psycopg2.connect(PG_URI)
 
+def init_device_config_table():
+    """初始化设备配置表（如果不存在则创建）"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS device_config (
+                    device_id VARCHAR(50) PRIMARY KEY,
+                    alias VARCHAR(100) DEFAULT '',
+                    threshold DECIMAL(5,2) DEFAULT 50.0,
+                    duration INTEGER DEFAULT 10,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.commit()
+            logger.info("设备配置表已就绪")
+    except Exception as e:
+        logger.error(f"初始化设备配置表失败: {e}")
+    finally:
+        if conn:
+            conn.close()
+
 @app.route("/")
 def dashboard():
     """AE1科电柜温度监控看板主页"""
@@ -38,8 +61,24 @@ def dashboard():
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AE1科电柜温度监控看板</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
     <style>
+        :root {
+            --primary: #4f46e5;
+            --primary-light: #818cf8;
+            --primary-dark: #3730a3;
+            --success: #10b981;
+            --danger: #f43f5e;
+            --warning: #f59e0b;
+            --bg-main: #f8fafc;
+            --bg-card: #ffffff;
+            --text-main: #0f172a;
+            --text-muted: #64748b;
+            --border-color: #e2e8f0;
+            --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+            --shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+            --shadow-lg: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+        }
+
         * {
             margin: 0;
             padding: 0;
@@ -47,628 +86,527 @@ def dashboard():
         }
         
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background-color: var(--bg-main);
+            color: var(--text-main);
             min-height: 100vh;
-            padding: 20px;
+            line-height: 1.6;
         }
         
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-        }
-        
-        .header {
-            background: rgba(255, 255, 255, 0.95);
-            padding: 20px;
-            border-radius: 15px;
-            margin-bottom: 30px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        }
-        
-        .header h1 {
-            color: #333;
-            font-size: 2em;
-            margin-bottom: 10px;
-        }
-        
-        .header p {
-            color: #666;
-            font-size: 0.9em;
-        }
-        
-        .controls {
-            background: rgba(255, 255, 255, 0.95);
-            padding: 15px 20px;
-            border-radius: 15px;
-            margin-bottom: 20px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        .navbar {
+            background-color: #1e293b;
+            color: white;
+            padding: 0.75rem 2rem;
+            position: sticky;
+            top: 0;
+            z-index: 100;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            flex-wrap: wrap;
-            gap: 15px;
+            box-shadow: var(--shadow);
         }
-        
-        .control-group {
+
+        .navbar-brand {
             display: flex;
             align-items: center;
-            gap: 10px;
-        }
-        
-        .control-group label {
-            font-weight: 600;
-            color: #333;
-            font-size: 0.9em;
-        }
-        
-        .control-group input[type="number"] {
-            padding: 8px 12px;
-            border: 2px solid #667eea;
-            border-radius: 8px;
-            font-size: 0.9em;
-            width: 80px;
-        }
-        
-        .control-group input[type="checkbox"] {
-            width: 18px;
-            height: 18px;
-            cursor: pointer;
-        }
-        
-        .control-group input[type="datetime-local"] {
-            padding: 8px 12px;
-            border: 2px solid #667eea;
-            border-radius: 8px;
-            font-size: 0.9em;
-        }
-        
-        .control-group button {
-            padding: 8px 16px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            gap: 12px;
+            font-size: 1.25rem;
+            font-weight: 700;
             color: white;
-            border: none;
-            border-radius: 8px;
+        }
+
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 1.5rem;
+        }
+        
+        .controls-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.5rem;
+            background: white;
+            padding: 1rem 1.5rem;
+            border-radius: 0.75rem;
+            box-shadow: var(--shadow-sm);
+            border: 1px solid var(--border-color);
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            font-weight: 600;
+            font-size: 0.875rem;
             cursor: pointer;
-            font-size: 0.9em;
-            font-weight: 600;
-            transition: transform 0.2s ease;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            border: 1px solid transparent;
+            white-space: nowrap;
         }
-        
-        .control-group button:hover {
-            transform: scale(1.05);
+
+        .btn-primary {
+            background-color: var(--primary);
+            color: white;
         }
-        
-        .control-group button:active {
-            transform: scale(0.98);
+
+        .btn-primary:hover {
+            background-color: var(--primary-dark);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3);
         }
-        
-        .time-filter-section {
-            background: rgba(230, 230, 250, 0.3);
-            border-radius: 8px;
-            padding: 15px;
-            margin-top: 15px;
+
+        .btn-outline {
+            background-color: white;
+            border-color: var(--border-color);
+            color: var(--text-main);
         }
-        
-        .time-filter-title {
-            font-size: 1em;
-            font-weight: 600;
-            color: #333;
-            margin-bottom: 10px;
+
+        .btn-outline:hover {
+            background-color: var(--bg-main);
+            border-color: var(--primary-light);
+            color: var(--primary);
         }
-        
-        .time-filter-controls {
+
+        .input {
+            padding: 0.5rem 0.75rem;
+            border: 1px solid var(--border-color);
+            border-radius: 0.375rem;
+            font-size: 0.875rem;
+            color: var(--text-main);
+            background-color: white;
+            transition: all 0.2s;
+        }
+
+        .input:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+        }
+
+        .card {
+            background-color: var(--bg-card);
+            border-radius: 1rem;
+            padding: 1.5rem;
+            box-shadow: var(--shadow-sm);
+            border: 1px solid var(--border-color);
+            margin-bottom: 1.5rem;
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.25rem;
+            padding-bottom: 0.75rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .card-title {
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: #1e293b;
             display: flex;
             align-items: center;
-            gap: 15px;
-            flex-wrap: wrap;
+            gap: 8px;
         }
-        
-        .section {
-            background: rgba(255, 255, 255, 0.95);
-            border-radius: 15px;
-            padding: 25px;
-            margin-bottom: 20px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        }
-        
-        .section-title {
-            font-size: 1.5em;
-            color: #333;
-            margin-bottom: 20px;
-            padding-bottom: 10px;
-            border-bottom: 2px solid #667eea;
-        }
-        
+
         .device-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-            gap: 20px;
+            gap: 1.25rem;
         }
         
         .device-card {
-            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-            border-radius: 12px;
-            padding: 20px;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-            border: 3px solid transparent;
-            transition: transform 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease;
+            background: white;
+            border-radius: 0.75rem;
+            padding: 1.25rem;
+            border: 1px solid var(--border-color);
+            transition: all 0.3s ease;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
         }
         
         .device-card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+            transform: translateY(-2px);
+            box-shadow: var(--shadow);
+            border-color: var(--primary-light);
         }
         
         .device-card.alerting {
-            border-color: #ef4444;
-            box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
-            animation: alertBorderPulse 2s infinite;
-            /* 确保背景色不变 */
-            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            border-color: var(--danger);
+            background-color: #fff1f2;
+            animation: alertPulse 2s infinite;
         }
         
-        .device-card.alerting:hover {
-            box-shadow: 0 4px 16px rgba(239, 68, 68, 0.5);
-            /* 悬停时背景色也不变 */
-            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+        @keyframes alertPulse {
+            0% { box-shadow: 0 0 0 0 rgba(244, 63, 94, 0.4); }
+            70% { box-shadow: 0 0 0 10px rgba(244, 63, 94, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(244, 63, 94, 0); }
         }
         
-        @keyframes alertBorderPulse {
-            0%, 100% {
-                border-color: #ef4444;
-                box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
-            }
-            50% {
-                border-color: #dc2626;
-                box-shadow: 0 2px 12px rgba(239, 68, 68, 0.5);
-            }
+        .device-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
-        
+
         .device-id {
-            font-size: 1.2em;
-            font-weight: bold;
-            color: #333;
-            margin-bottom: 15px;
-            word-break: break-all;
+            font-weight: 700;
+            font-size: 1rem;
+            color: var(--text-main);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        
+        .status-badge {
+            padding: 2px 8px;
+            border-radius: 6px;
+            font-size: 0.7rem;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+        
+        .status-online {
+            background-color: #dcfce7;
+            color: #15803d;
+        }
+        
+        .status-offline {
+            background-color: #fee2e2;
+            color: #b91c1c;
         }
         
         .device-info {
             display: grid;
             grid-template-columns: 1fr 1fr;
-            gap: 10px;
+            gap: 0.75rem;
         }
         
         .info-item {
             display: flex;
             flex-direction: column;
         }
+
+        .info-item-full {
+            grid-column: span 2;
+        }
         
         .info-label {
-            font-size: 0.8em;
-            color: #666;
-            margin-bottom: 5px;
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.025em;
         }
         
         .info-value {
-            font-size: 1em;
+            font-size: 0.875rem;
             font-weight: 600;
-            color: #333;
+            color: var(--text-main);
         }
-        
-        .info-value a {
-            color: #667eea;
-            text-decoration: none;
-            transition: color 0.2s ease;
+
+        .temp-val {
+            font-size: 1.5rem;
+            font-weight: 800;
+            color: var(--primary);
+            line-height: 1;
         }
-        
-        .info-value a:hover {
-            color: #764ba2;
-            text-decoration: underline;
-        }
-        
-        .status-badge {
-            display: inline-block;
-            padding: 5px 15px;
-            border-radius: 20px;
-            font-size: 0.9em;
+
+        .device-config-btn {
+            width: 100%;
+            margin-top: 0.5rem;
+            padding: 0.4rem;
+            background: #f1f5f9;
+            border: 1px solid var(--border-color);
+            border-radius: 0.375rem;
+            font-size: 0.75rem;
             font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
         }
-        
-        .status-online {
-            background: #10b981;
-            color: white;
+
+        .device-config-btn:hover {
+            background: #e2e8f0;
+            border-color: #cbd5e1;
         }
-        
-        .status-offline {
-            background: #ef4444;
-            color: white;
+
+        .filter-section {
+            margin-top: 1.5rem;
+            padding: 1rem;
+            background: #f1f5f9;
+            border-radius: 0.75rem;
         }
-        
-        .device-filter {
-            background: rgba(245, 247, 250, 0.8);
-            border-radius: 8px;
-            padding: 15px;
-            margin-top: 15px;
-        }
-        
-        .filter-header {
-            font-size: 1em;
-            font-weight: 600;
-            color: #333;
-            margin-bottom: 10px;
-        }
-        
-        .filter-checkboxes {
+
+        .filter-grid {
             display: flex;
             flex-wrap: wrap;
-            gap: 10px;
+            gap: 0.75rem;
         }
-        
+
         .filter-item {
             display: flex;
             align-items: center;
-            gap: 5px;
-            padding: 5px 10px;
+            gap: 6px;
+            padding: 4px 10px;
             background: white;
+            border: 1px solid var(--border-color);
             border-radius: 6px;
-            cursor: pointer;
-            transition: background 0.2s ease;
-        }
-        
-        .filter-item:hover {
-            background: #e0e7ff;
-        }
-        
-        .filter-item input[type="checkbox"] {
+            font-size: 0.8rem;
             cursor: pointer;
         }
-        
-        .refresh-btn {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            padding: 12px 24px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 1em;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-            transition: transform 0.2s ease;
+
+        .chart-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+            gap: 1.5rem;
         }
-        
-        .refresh-btn:hover {
-            transform: scale(1.05);
+
+        .temperature-chart {
+            background: white;
+            border-radius: 0.75rem;
+            padding: 1.25rem;
+            border: 1px solid var(--border-color);
+            box-shadow: var(--shadow-sm);
         }
-        
-        .refresh-btn:active {
-            transform: scale(0.98);
-        }
-        
-        .chart-container {
-            position: relative;
-            height: 400px;
-            margin: 20px 0;
-        }
-        
+
         .chart-title {
-            font-size: 1.1em;
-            color: #333;
-            margin-bottom: 10px;
-            text-align: center;
+            font-size: 0.9rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+            color: #475569;
+            display: flex;
+            align-items: center;
+            gap: 6px;
         }
-        
-        .loading {
-            text-align: center;
-            padding: 40px;
-            color: #666;
+
+        .chart-container {
+            height: 250px;
+            position: relative;
         }
-        
-        .info-item-full {
-            grid-column: 1 / -1;
-        }
-        
-        .alert-settings {
-            background: rgba(255, 248, 220, 0.9);
-            border: 2px solid #ff9800;
-            border-radius: 8px;
-            padding: 15px;
-            margin-top: 15px;
-        }
-        
-        .alert-settings-title {
-            font-size: 1em;
-            font-weight: 600;
-            color: #e65100;
-            margin-bottom: 10px;
-        }
-        
-        .alert-popup {
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            background: linear-gradient(135deg, #ff6b6b 0%, #ee5a6f 100%);
-            color: white;
-            padding: 30px 40px;
-            border-radius: 15px;
-            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
-            z-index: 10000;
-            min-width: 400px;
-            max-width: 600px;
-            animation: alertPulse 2s infinite;
-        }
-        
-        @keyframes alertPulse {
-            0%, 100% {
-                box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
-            }
-            50% {
-                box-shadow: 0 10px 50px rgba(255, 107, 107, 0.6);
-            }
-        }
-        
-        .alert-popup.hidden {
-            display: none;
-        }
-        
-        .alert-popup-title {
-            font-size: 1.5em;
-            font-weight: bold;
-            margin-bottom: 15px;
-            text-align: center;
-        }
-        
-        .alert-popup-content {
-            font-size: 1.1em;
-            line-height: 1.6;
-            margin-bottom: 20px;
-        }
-        
-        .alert-popup-device {
-            background: rgba(255, 255, 255, 0.2);
-            padding: 10px;
-            border-radius: 8px;
-            margin: 5px 0;
-        }
-        
-        .alert-popup-close {
-            background: rgba(255, 255, 255, 0.3);
-            color: white;
-            border: 2px solid white;
-            padding: 10px 20px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 1em;
-            font-weight: 600;
-            width: 100%;
-            transition: background 0.3s ease;
-        }
-        
-        .alert-popup-close:hover {
-            background: rgba(255, 255, 255, 0.5);
-        }
-        
-        .alert-overlay {
+
+        .modal-overlay {
             position: fixed;
             top: 0;
             left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.5);
-            z-index: 9999;
-        }
-        
-        .alert-overlay.hidden {
-            display: none;
-        }
-        
-        .alert-icon {
-            font-size: 3em;
-            text-align: center;
-            margin-bottom: 15px;
-        }
-        
-        .device-config-btn {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            padding: 6px 12px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 0.85em;
-            font-weight: 600;
-            margin-top: 10px;
-            width: 100%;
-            transition: transform 0.2s ease;
-        }
-        
-        .device-config-btn:hover {
-            transform: scale(1.02);
-        }
-        
-        .config-modal {
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            background: white;
-            padding: 30px;
-            border-radius: 15px;
-            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
-            z-index: 10001;
-            min-width: 400px;
-            max-width: 500px;
-        }
-        
-        .config-modal.hidden {
-            display: none;
-        }
-        
-        .config-modal-title {
-            font-size: 1.3em;
-            font-weight: bold;
-            color: #333;
-            margin-bottom: 20px;
-            text-align: center;
-        }
-        
-        .config-form-group {
-            margin-bottom: 20px;
-        }
-        
-        .config-form-group label {
-            display: block;
-            font-weight: 600;
-            color: #333;
-            margin-bottom: 8px;
-        }
-        
-        .config-form-group input {
-            width: 100%;
-            padding: 10px;
-            border: 2px solid #667eea;
-            border-radius: 8px;
-            font-size: 1em;
-        }
-        
-        .config-modal-buttons {
+            right: 0;
+            bottom: 0;
+            background: rgba(15, 23, 42, 0.6);
+            backdrop-filter: blur(4px);
             display: flex;
-            gap: 10px;
-            margin-top: 25px;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
         }
-        
-        .config-modal-btn {
-            flex: 1;
-            padding: 12px;
-            border: none;
-            border-radius: 8px;
-            font-size: 1em;
-            font-weight: 600;
-            cursor: pointer;
-            transition: transform 0.2s ease;
+
+        .modal {
+            background: white;
+            border-radius: 1rem;
+            width: 90%;
+            max-width: 450px;
+            box-shadow: var(--shadow-lg);
+            overflow: hidden;
+            animation: slideIn 0.3s ease-out;
         }
-        
-        .config-modal-btn-save {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
+
+        @keyframes slideIn {
+            from { transform: translateY(20px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
         }
-        
-        .config-modal-btn-cancel {
-            background: #e0e0e0;
-            color: #333;
+
+        .modal-header {
+            padding: 1.25rem;
+            background: #f8fafc;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
-        
-        .config-modal-btn:hover {
-            transform: scale(1.02);
+
+        .modal-body {
+            padding: 1.5rem;
         }
-        
-        .config-info {
-            font-size: 0.85em;
-            color: #666;
-            margin-top: 5px;
+
+        .modal-footer {
+            padding: 1.25rem;
+            border-top: 1px solid var(--border-color);
+            display: flex;
+            gap: 0.75rem;
+        }
+
+        .alert-modal {
+            border: 2px solid var(--danger);
+        }
+
+        .alert-modal .modal-header {
+            background: #fff1f2;
+            color: var(--danger);
+        }
+
+        .alert-popup-device {
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            margin-top: 0.75rem;
+        }
+
+        .loading-spinner {
+            grid-column: 1 / -1;
+            padding: 4rem;
+            text-align: center;
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+
+        .hidden { display: none !important; }
+
+        @media (max-width: 768px) {
+            .container { padding: 1rem; }
+            .chart-grid { grid-template-columns: 1fr; }
+            .controls-bar { flex-direction: column; align-items: stretch; }
         }
     </style>
+    <script src="/static/chart.umd.js"></script>
 </head>
 <body>
+    <nav class="navbar">
+        <div class="navbar-brand">
+            <span style="font-size: 1.75rem;">⚡</span>
+            <span>AE1 科电柜温度监控看板</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 1.25rem;">
+            <div id="connectionStatus" class="status-badge status-online">● 服务器在线</div>
+            <button class="btn btn-primary" onclick="loadDashboard()">
+                <span>🔄</span> 立即刷新
+            </button>
+        </div>
+    </nav>
+
     <div class="container">
-        <div class="header">
-            <h1>📊 设备监控看板</h1>
-            <p>实时监控设备状态和温度历史</p>
+        <div class="controls-bar">
+            <div style="display: flex; align-items: center; gap: 1.5rem;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span class="info-label" style="font-weight: 700; color: var(--text-main);">自动刷新频率</span>
+                    <input type="number" id="refreshInterval" class="input" style="width: 65px; text-align: center;" min="5" max="300" value="10" onchange="updateRefreshInterval()">
+                    <span class="info-label">秒</span>
+                </div>
+                <div style="height: 20px; width: 1px; background: var(--border-color);"></div>
+                <div id="lastUpdated" class="info-label" style="font-weight: 600;">最后更新: --:--:--</div>
+            </div>
+            <div>
+                <!-- 预留次要操作区域 -->
+            </div>
         </div>
         
-        <div class="controls">
-            <div class="control-group">
-                <button class="refresh-btn" onclick="loadDashboard()">🔄 刷新数据</button>
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">
+                    <span style="color: var(--primary);">📊</span>
+                    实时设备状态
+                </h2>
             </div>
-            <div class="control-group">
-                <label for="refreshInterval">自动刷新(秒):</label>
-                <input type="number" id="refreshInterval" min="5" max="300" value="10" onchange="updateRefreshInterval()">
-            </div>
-        </div>
-        
-        <!-- 设备信息部分 -->
-        <div class="section">
-            <h2 class="section-title">📱 设备信息 (device_info)</h2>
             <div id="device-info-container" class="device-grid">
-                <div class="loading">正在加载设备信息...</div>
+                <div class="loading-spinner">正在初始化设备...</div>
             </div>
-            <div class="device-filter">
-                <div class="filter-header">🔍 筛选温度图表设备:</div>
-                <div id="device-filter-container" class="filter-checkboxes">
-                    <div class="loading">正在加载设备列表...</div>
+            
+            <div class="filter-section">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
+                    <div class="info-label" style="font-weight: 700;">🔍 筛选显示图表的设备:</div>
+                    <div class="filter-item" style="cursor: pointer; user-select: none;" onclick="toggleOfflineCharts()">
+                        <input type="checkbox" id="showOfflineToggle" style="pointer-events: none;">
+                        <label style="cursor: pointer; font-weight: 600;">显示离线设备图表</label>
+                    </div>
+                </div>
+                <div id="device-filter-container" class="filter-grid" style="margin-top: 0.75rem;">
+                    <!-- 复选框 -->
                 </div>
             </div>
         </div>
         
-        <!-- 温度历史部分 -->
-        <div class="section">
-            <h2 class="section-title">🌡️ 温度历史 (his_temperature)</h2>
-            <div class="time-filter-section">
-                <div class="time-filter-title">⏰ 时间筛选:</div>
-                <div class="time-filter-controls">
-                    <div class="control-group">
-                        <label for="startTime">开始时间:</label>
-                        <input type="datetime-local" id="startTime">
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">
+                    <span style="color: var(--primary);">📈</span>
+                    温度趋势分析
+                </h2>
+                <div style="display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center;">
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span class="info-label">从</span>
+                        <input type="datetime-local" id="startTime" class="input">
                     </div>
-                    <div class="control-group">
-                        <label for="endTime">结束时间:</label>
-                        <input type="datetime-local" id="endTime">
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span class="info-label">至</span>
+                        <input type="datetime-local" id="endTime" class="input">
                     </div>
-                    <div class="control-group">
-                        <button onclick="applyTimeFilter()">应用筛选</button>
+                    <button class="btn btn-primary" style="padding: 0.4rem 0.8rem;" onclick="applyTimeFilter()">查询筛选</button>
+                    <button class="btn btn-outline" style="padding: 0.4rem 0.8rem;" onclick="clearTimeFilter()">重置</button>
+                </div>
+            </div>
+            <div id="temperature-charts-container" class="chart-grid">
+                <div class="loading-spinner">正在准备数据可视化...</div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Modal: Config -->
+    <div id="configOverlay" class="modal-overlay hidden">
+        <div id="configModal" class="modal">
+            <div class="modal-header">
+                <h3 class="card-title">⚙️ 报警参数配置</h3>
+                <button class="btn btn-outline" style="padding: 4px 8px;" onclick="closeConfigModal()">✕</button>
+            </div>
+            <div class="modal-body">
+                <div id="configModalDeviceId" style="margin-bottom: 1.5rem; color: var(--text-muted); font-weight: 600;"></div>
+                
+                <div style="margin-bottom: 1.25rem;">
+                    <label class="info-label" style="display: block; margin-bottom: 0.5rem;">设备备注名称</label>
+                    <input type="text" id="configDeviceAlias" class="input" style="width: 100%;" placeholder="例如: 1号主控柜">
+                </div>
+                
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                    <div>
+                        <label class="info-label" style="display: block; margin-bottom: 0.5rem;">温度阈值 (°C)</label>
+                        <input type="number" id="configTempThreshold" class="input" style="width: 100%;" min="0" max="150" step="0.1">
                     </div>
-                    <div class="control-group">
-                        <button onclick="clearTimeFilter()">清除筛选</button>
+                    <div>
+                        <label class="info-label" style="display: block; margin-bottom: 0.5rem;">持续报警时长 (秒)</label>
+                        <input type="number" id="configAlertDuration" class="input" style="width: 100%;" min="1" max="300">
                     </div>
                 </div>
             </div>
-            <div id="temperature-charts-container">
-                <div class="loading">正在加载温度数据...</div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" style="flex: 1;" onclick="saveDeviceConfig()">保存设置</button>
+                <button class="btn btn-outline" style="flex: 1;" onclick="closeConfigModal()">取消</button>
             </div>
         </div>
     </div>
     
-    <!-- 设备配置弹窗 -->
-    <div id="configOverlay" class="alert-overlay hidden" onclick="closeConfigModal()"></div>
-    <div id="configModal" class="config-modal hidden">
-        <div class="config-modal-title">⚙️ 设备报警配置</div>
-        <div id="configModalDeviceId" style="text-align: center; color: #666; margin-bottom: 20px; font-size: 1.1em;"></div>
-        <div class="config-form-group">
-            <label for="configDeviceAlias">设备备注名:</label>
-            <input type="text" id="configDeviceAlias" maxlength="50" placeholder="例如: 1号、A区设备等">
-            <div class="config-info">为设备设置一个易于识别的备注名，将在显示中使用</div>
+    <!-- Modal: Alert -->
+    <div id="alertOverlay" class="modal-overlay hidden">
+        <div id="alertPopup" class="modal alert-modal">
+            <div class="modal-header" style="border-bottom: none;">
+                <h3 class="card-title" style="color: var(--danger); font-size: 1.5rem;">⚠️ 紧急温度警报</h3>
+            </div>
+            <div class="modal-body" id="alertContent">
+                <!-- Alert content -->
+            </div>
+            <div class="modal-footer" style="border-top: none;">
+                <button class="btn btn-primary" style="background: var(--danger); border: none; width: 100%;" onclick="closeAlert()">我已确认</button>
+            </div>
         </div>
-        <div class="config-form-group">
-            <label for="configTempThreshold">温度阈值 (°C):</label>
-            <input type="number" id="configTempThreshold" min="0" max="150" step="0.1" value="50">
-            <div class="config-info">当设备温度超过此值时开始计时</div>
-        </div>
-        <div class="config-form-group">
-            <label for="configAlertDuration">持续时长 (秒):</label>
-            <input type="number" id="configAlertDuration" min="1" max="300" value="10">
-            <div class="config-info">温度超过阈值后持续此时长将触发报警</div>
-        </div>
-        <div class="config-modal-buttons">
-            <button class="config-modal-btn config-modal-btn-save" onclick="saveDeviceConfig()">保存配置</button>
-            <button class="config-modal-btn config-modal-btn-cancel" onclick="closeConfigModal()">取消</button>
-        </div>
-    </div>
-    
-    <!-- 报警弹窗 -->
-    <div id="alertOverlay" class="alert-overlay hidden" onclick="closeAlert()"></div>
-    <div id="alertPopup" class="alert-popup hidden">
-        <div class="alert-icon">🔥</div>
-        <div class="alert-popup-title">⚠️ 温度过高报警</div>
-        <div class="alert-popup-content" id="alertContent">
-            <!-- 报警内容将动态填充 -->
-        </div>
-        <button class="alert-popup-close" onclick="closeAlert()">确认</button>
     </div>
     
     <script>
         let allDevices = [];
         let allTelemetryData = {};
         let selectedDevices = [];
+        let showOfflineCharts = false; // 默认不显示离线设备图表
         let refreshIntervalId = null;
         let currentRefreshInterval = 10000; // 默认10秒
         
@@ -678,23 +616,48 @@ def dashboard():
         let alertCheckInterval = null; // 报警检查定时器
         let currentConfigDeviceId = null; // 当前正在配置的设备ID
         
-        // 从localStorage加载设备配置
-        function loadDeviceConfigs() {
-            const saved = localStorage.getItem('deviceAlertConfigs');
-            if (saved) {
-                deviceConfigs = JSON.parse(saved);
-                // 确保旧数据兼容性：为没有alias字段的配置添加默认值
-                Object.keys(deviceConfigs).forEach(deviceId => {
-                    if (!deviceConfigs[deviceId].hasOwnProperty('alias')) {
-                        deviceConfigs[deviceId].alias = '';
-                    }
-                });
+        // 从服务器加载设备配置
+        async function loadDeviceConfigs() {
+            try {
+                const response = await fetch('/api/device_config');
+                if (response.ok) {
+                    const serverConfigs = await response.json();
+                    // 合并服务器配置到本地
+                    Object.keys(serverConfigs).forEach(deviceId => {
+                        deviceConfigs[deviceId] = serverConfigs[deviceId];
+                    });
+                    console.log('设备配置已从服务器加载');
+                }
+            } catch (error) {
+                console.error('加载设备配置失败:', error);
             }
         }
         
-        // 保存设备配置到localStorage
-        function saveDeviceConfigs() {
-            localStorage.setItem('deviceAlertConfigs', JSON.stringify(deviceConfigs));
+        // 保存单个设备配置到服务器
+        async function saveDeviceConfigToServer(deviceId, config) {
+            try {
+                const response = await fetch(`/api/device_config/${deviceId}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(config)
+                });
+                
+                if (response.ok) {
+                    console.log(`设备 ${deviceId} 配置已保存到服务器`);
+                    return true;
+                } else {
+                    const errorData = await response.json();
+                    console.error('保存配置失败:', errorData.error);
+                    alert('保存配置失败: ' + (errorData.error || '未知错误'));
+                    return false;
+                }
+            } catch (error) {
+                console.error('保存配置请求失败:', error);
+                alert('保存配置失败，请检查网络连接');
+                return false;
+            }
         }
         
         // 获取设备配置（如果不存在则使用默认值）
@@ -761,15 +724,19 @@ def dashboard():
                 
                 renderTemperatureCharts(tempHistory);
                 
+                // 更新最后更新时间
+                const now = new Date();
+                document.getElementById('lastUpdated').textContent = `最后更新: ${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
+                
                 // 检查温度报警（数据更新后立即检查）
                 checkTemperatureAlerts();
             } catch (error) {
                 console.error('加载数据失败:', error);
                 const errorMessage = error.message || '未知错误';
                 document.getElementById('device-info-container').innerHTML = 
-                    `<div class="loading">❌ 加载失败，请检查服务器连接<br><small>${errorMessage}</small></div>`;
+                    `<div class="loading-spinner" style="color: var(--danger);">❌ 连接失败<br><small>${errorMessage}</small></div>`;
                 document.getElementById('temperature-charts-container').innerHTML = 
-                    `<div class="loading">❌ 加载失败，请检查服务器连接<br><small>${errorMessage}</small></div>`;
+                    `<div class="loading-spinner" style="color: var(--danger);">❌ 连接失败<br><small>${errorMessage}</small></div>`;
             }
         }
         
@@ -778,61 +745,62 @@ def dashboard():
             const container = document.getElementById('device-info-container');
             
             if (!devices || devices.length === 0) {
-                container.innerHTML = '<div class="loading">暂无设备数据</div>';
+                container.innerHTML = '<div class="loading-spinner">暂无设备数据</div>';
                 return;
             }
             
             container.innerHTML = devices.map(device => {
                 const config = getDeviceConfig(device.device_id);
                 const displayName = formatDeviceName(device.device_id);
-                
-                // 检查设备是否处于报警状态
                 const isAlerting = deviceAlertStatus[device.device_id]?.alerted === true;
+                const isOnline = device.status === 'online';
+                const temp = (isOnline && device.current_temp !== null) ? device.current_temp.toFixed(1) : '--';
                 
                 return `
                 <div class="device-card ${isAlerting ? 'alerting' : ''}">
-                    <div class="device-id">🔌 ${displayName}</div>
+                    <div class="device-card-header">
+                        <div class="device-id">
+                            <span style="font-size: 1.2rem;">🔌</span>
+                            <span>${displayName}</span>
+                        </div>
+                        <span class="status-badge ${isOnline ? 'status-online' : 'status-offline'}">
+                            ${isOnline ? '在线' : '离线'}
+                        </span>
+                    </div>
+
+                    <div style="text-align: center; padding: 0.5rem 0;">
+                        <div class="info-label" style="margin-bottom: 0.25rem;">当前实时温度</div>
+                        <div class="temp-val">${temp}<small style="font-size: 0.8rem; margin-left: 2px;">°C</small></div>
+                    </div>
+
                     <div class="device-info">
                         <div class="info-item">
                             <span class="info-label">固件版本</span>
-                            <span class="info-value">${device.fw_version}</span>
+                            <span class="info-value">${device.fw_version || 'v1.0'}</span>
                         </div>
                         <div class="info-item">
-                            <span class="info-label">IP地址</span>
+                            <span class="info-label">IP 地址</span>
                             <span class="info-value">
-                                <a href="http://${device.ip}" target="_blank">${device.ip}</a>
+                                <a href="http://${device.ip}" target="_blank" style="color: var(--primary); text-decoration: none;">${device.ip}</a>
                             </span>
                         </div>
                         <div class="info-item">
                             <span class="info-label">运行时间</span>
-                            <span class="info-value">${formatUptime(device.uptime_sec)}</span>
+                            <span class="info-value">${isOnline ? formatUptime(device.uptime_sec) : '--'}</span>
                         </div>
                         <div class="info-item">
-                            <span class="info-label">状态</span>
-                            <span class="status-badge ${device.status === 'online' ? 'status-online' : 'status-offline'}">
-                                ${device.status === 'online' ? '🟢 在线' : '🔴 离线'}
-                            </span>
-                        </div>
-                        <div class="info-item">
-                            <span class="info-label">实时温度</span>
-                            <span class="info-value" style="font-size: 1.1em; font-weight: bold; color: ${device.status === 'online' && device.current_temp !== null && device.current_temp !== undefined ? '#667eea' : '#999'}">
-                                ${device.status === 'online' && device.current_temp !== null && device.current_temp !== undefined ? device.current_temp.toFixed(2) + '°C' : '--'}
-                            </span>
+                            <span class="info-label">报警阈值</span>
+                            <span class="info-value">${config.threshold}°C</span>
                         </div>
                         <div class="info-item info-item-full">
-                            <span class="info-label">最后更新</span>
-                            <span class="info-value">${device.last_seen ? formatDateTime(device.last_seen) : '未知'}</span>
-                        </div>
-                        <div class="info-item info-item-full">
-                            <span class="info-label">报警配置</span>
-                            <span class="info-value" style="font-size: 0.9em;">
-                                阈值: ${config.threshold}°C | 时长: ${config.duration}秒
-                            </span>
-                        </div>
-                        <div class="info-item info-item-full">
-                            <button class="device-config-btn" onclick="openConfigModal('${device.device_id}')">⚙️ 配置</button>
+                            <span class="info-label">最后通信时间</span>
+                            <span class="info-value">${device.last_seen ? formatDateTime(device.last_seen) : '从未通信'}</span>
                         </div>
                     </div>
+
+                    <button class="device-config-btn" onclick="openConfigModal('${device.device_id}')">
+                        ⚙️ 配置报警参数
+                    </button>
                 </div>
             `;
             }).join('');
@@ -951,12 +919,42 @@ def dashboard():
             renderTemperatureCharts(filteredData);
         }
         
+        // 切换离线设备图表显示
+        function toggleOfflineCharts() {
+            showOfflineCharts = !showOfflineCharts;
+            document.getElementById('showOfflineToggle').checked = showOfflineCharts;
+            
+            // 重新渲染温度图表
+            const filteredData = {};
+            selectedDevices.forEach(deviceId => {
+                if (allTelemetryData[deviceId]) {
+                    filteredData[deviceId] = allTelemetryData[deviceId];
+                }
+            });
+            
+            renderTemperatureCharts(filteredData);
+        }
+        
         // 渲染温度历史图表
         function renderTemperatureCharts(telemetryData) {
             const container = document.getElementById('temperature-charts-container');
             
+            // 检查Chart.js是否已加载
+            if (typeof Chart === 'undefined') {
+                container.innerHTML = '<div class="loading-spinner">❌ Chart.js库加载失败<br><small>正在尝试重新加载...</small></div>';
+                // 尝试重新加载Chart.js
+                setTimeout(() => {
+                    loadChartJS().then(() => {
+                        renderTemperatureCharts(telemetryData);
+                    }).catch(() => {
+                        container.innerHTML = '<div class="loading-spinner">❌ Chart.js库加载失败，请检查本地文件或刷新页面</div>';
+                    });
+                }, 2000);
+                return;
+            }
+            
             if (!telemetryData || Object.keys(telemetryData).length === 0) {
-                container.innerHTML = '<div class="loading">暂无可显示的温度数据</div>';
+                container.innerHTML = '<div class="loading-spinner">暂无可显示的温度数据</div>';
                 return;
             }
             
@@ -970,8 +968,12 @@ def dashboard():
             Object.keys(telemetryData).forEach(deviceId => {
                 const data = telemetryData[deviceId];
                 
-                // 跳过没有数据的设备
-                if (!data.temps || data.temps.length === 0) {
+                // 检查设备是否在线
+                const deviceStatus = allDevices.find(d => d.device_id === deviceId);
+                const isOnline = deviceStatus && deviceStatus.status === 'online';
+                
+                // 过滤条件：有数据，且 (设备在线 或 用户选择显示离线图表)
+                if (!data.temps || data.temps.length === 0 || (!isOnline && !showOfflineCharts)) {
                     return;
                 }
                 
@@ -987,53 +989,105 @@ def dashboard():
                 container.appendChild(chartDiv);
                 
                 // 创建图表
-                const ctx = document.getElementById(`chart-${deviceId}`).getContext('2d');
-                new Chart(ctx, {
-                    type: 'line',
-                    data: {
-                        labels: data.timestamps,
-                        datasets: [{
-                            label: '温度 (°C)',
-                            data: data.temps,
-                            borderColor: '#667eea',
-                            backgroundColor: 'rgba(102, 126, 234, 0.1)',
-                            borderWidth: 2,
-                            fill: true,
-                            tension: 0.4,
-                            pointRadius: 3,
-                            pointHoverRadius: 6
-                        }]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        plugins: {
-                            legend: {
-                                display: true,
-                                position: 'top'
-                            },
-                            tooltip: {
-                                mode: 'index',
-                                intersect: false
-                            }
+                try {
+                    const ctx = document.getElementById(`chart-${deviceId}`).getContext('2d');
+                    new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: data.timestamps,
+                            datasets: [{
+                                label: '温度 (°C)',
+                                data: data.temps,
+                                borderColor: '#4f46e5',
+                                backgroundColor: 'rgba(79, 70, 229, 0.05)',
+                                borderWidth: 2.5,
+                                fill: true,
+                                tension: 0.4,
+                                pointRadius: 2,
+                                pointHoverRadius: 5,
+                                pointBackgroundColor: '#4f46e5',
+                                pointBorderColor: '#fff',
+                                pointBorderWidth: 2
+                            }]
                         },
-                        scales: {
-                            y: {
-                                beginAtZero: false,
-                                title: {
-                                    display: true,
-                                    text: '温度 (°C)'
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            interaction: {
+                                mode: 'index',
+                                intersect: false,
+                            },
+                            plugins: {
+                                legend: {
+                                    display: false
+                                },
+                                tooltip: {
+                                    backgroundColor: 'rgba(15, 23, 42, 0.9)',
+                                    padding: 10,
+                                    titleFont: { size: 12, weight: 'bold' },
+                                    bodyFont: { size: 14 },
+                                    displayColors: false,
+                                    callbacks: {
+                                        label: function(context) {
+                                            return context.parsed.y.toFixed(2) + ' °C';
+                                        }
+                                    }
                                 }
                             },
-                            x: {
-                                title: {
-                                    display: true,
-                                    text: '时间'
+                            scales: {
+                                y: {
+                                    beginAtZero: false,
+                                    grid: { color: '#f1f5f9' },
+                                    ticks: {
+                                        font: { size: 10 },
+                                        callback: value => value + '°C'
+                                    }
+                                },
+                                x: {
+                                    grid: { display: false },
+                                    ticks: {
+                                        font: { size: 9 },
+                                        maxRotation: 45,
+                                        minRotation: 0,
+                                        autoSkip: true,
+                                        maxTicksLimit: 6
+                                    }
                                 }
                             }
                         }
+                    });
+                } catch (error) {
+                    console.error(`创建设备 ${deviceId} 的图表失败:`, error);
+                    chartDiv.innerHTML = `<div class="loading">❌ 图表加载失败: ${error.message}</div>`;
+                }
+            });
+        }
+        
+        // 加载Chart.js库（已在页面头部从本地加载）
+        function loadChartJS() {
+            return new Promise((resolve, reject) => {
+                // 检查Chart.js是否已加载
+                if (typeof Chart !== 'undefined') {
+                    console.log('Chart.js已从本地加载');
+                    resolve();
+                    return;
+                }
+                
+                // 如果本地加载失败，尝试动态重新加载
+                const script = document.createElement('script');
+                script.src = '/static/chart.umd.js';
+                script.onload = () => {
+                    if (typeof Chart !== 'undefined') {
+                        console.log('Chart.js动态加载成功');
+                        resolve();
+                    } else {
+                        reject(new Error('Chart.js加载失败'));
                     }
-                });
+                };
+                script.onerror = () => {
+                    reject(new Error('本地Chart.js文件加载失败'));
+                };
+                document.head.appendChild(script);
             });
         }
         
@@ -1095,24 +1149,22 @@ def dashboard():
             currentConfigDeviceId = deviceId;
             const config = getDeviceConfig(deviceId);
             
-            document.getElementById('configModalDeviceId').textContent = `设备: ${deviceId}`;
+            document.getElementById('configModalDeviceId').textContent = `设备 ID: ${deviceId}`;
             document.getElementById('configDeviceAlias').value = config.alias || '';
             document.getElementById('configTempThreshold').value = config.threshold;
             document.getElementById('configAlertDuration').value = config.duration;
             
-            document.getElementById('configModal').classList.remove('hidden');
             document.getElementById('configOverlay').classList.remove('hidden');
         }
         
         // 关闭配置弹窗
         function closeConfigModal() {
-            document.getElementById('configModal').classList.add('hidden');
             document.getElementById('configOverlay').classList.add('hidden');
             currentConfigDeviceId = null;
         }
         
         // 保存设备配置
-        function saveDeviceConfig() {
+        async function saveDeviceConfig() {
             if (!currentConfigDeviceId) return;
             
             const alias = document.getElementById('configDeviceAlias').value.trim();
@@ -1129,30 +1181,36 @@ def dashboard():
                 return;
             }
             
-            deviceConfigs[currentConfigDeviceId] = {
+            const config = {
                 threshold: threshold,
                 duration: duration,
                 alias: alias
             };
             
-            saveDeviceConfigs();
+            // 保存到服务器
+            const success = await saveDeviceConfigToServer(currentConfigDeviceId, config);
             
-            // 重置该设备的报警状态
-            if (deviceAlertStatus[currentConfigDeviceId]) {
-                delete deviceAlertStatus[currentConfigDeviceId];
+            if (success) {
+                // 更新本地缓存
+                deviceConfigs[currentConfigDeviceId] = config;
+                
+                // 重置该设备的报警状态
+                if (deviceAlertStatus[currentConfigDeviceId]) {
+                    delete deviceAlertStatus[currentConfigDeviceId];
+                }
+                
+                // 刷新设备信息显示
+                renderDeviceInfo(allDevices);
+                
+                // 刷新设备筛选器
+                renderDeviceFilter(allDevices);
+                
+                closeConfigModal();
+                
+                const aliasText = alias ? `, 备注名: ${alias}` : '';
+                const displayName = formatDeviceName(currentConfigDeviceId);
+                console.log(`设备 ${displayName} 配置已更新: 温度阈值=${threshold}°C, 持续时长=${duration}秒${aliasText}`);
             }
-            
-            // 刷新设备信息显示
-            renderDeviceInfo(allDevices);
-            
-            // 刷新设备筛选器
-            renderDeviceFilter(allDevices);
-            
-            closeConfigModal();
-            
-            const aliasText = alias ? `, 备注名: ${alias}` : '';
-            const displayName = formatDeviceName(currentConfigDeviceId);
-            console.log(`设备 ${displayName} 配置已更新: 温度阈值=${threshold}°C, 持续时长=${duration}秒${aliasText}`);
         }
         
         // 检查温度报警
@@ -1229,47 +1287,42 @@ def dashboard():
         // 显示报警弹窗
         function showAlert(devices) {
             const alertContent = document.getElementById('alertContent');
-            const alertPopup = document.getElementById('alertPopup');
             const alertOverlay = document.getElementById('alertOverlay');
             
             // 构建报警内容
-            let content = `<p>以下设备温度持续超过设定阈值已达设定时长：</p>`;
+            let content = `<p style="margin-bottom: 1rem;">以下设备温度已超过阈值并持续达到设定时长：</p>`;
             
             devices.forEach(device => {
                 const displayName = formatDeviceName(device.deviceId);
                 content += `
                     <div class="alert-popup-device">
-                        <strong>设备 ${displayName}</strong><br>
-                        当前温度: <strong>${device.temperature.toFixed(2)}°C</strong><br>
-                        阈值: <strong>${device.threshold}°C</strong> | 持续时长: <strong>${device.duration}秒</strong>
+                        <strong>${displayName}</strong><br>
+                        <span style="color: var(--danger); font-size: 1.1rem; font-weight: 800;">
+                            ${device.temperature.toFixed(2)}°C
+                        </span>
+                        <span style="color: var(--text-muted); font-size: 0.8rem; margin-left: 8px;">
+                            (报警阈值: ${device.threshold}°C)
+                        </span>
                     </div>
                 `;
             });
             
             alertContent.innerHTML = content;
-            
-            // 显示弹窗
-            alertPopup.classList.remove('hidden');
             alertOverlay.classList.remove('hidden');
             
-            // 弹窗显示后，更新设备信息以显示红色边框（延迟执行，确保弹窗先显示）
             if (allDevices.length > 0) {
                 setTimeout(() => {
                     renderDeviceInfo(allDevices);
                 }, 100);
             }
             
-            // 播放提示音（浏览器需要用户交互才能播放声音，这里仅显示）
             const deviceNames = devices.map(d => formatDeviceName(d.deviceId)).join(', ');
-            console.warn(`温度报警触发！设备: ${deviceNames}`, devices);
+            console.warn(`温度警报触发！设备: ${deviceNames}`, devices);
         }
         
         // 关闭报警弹窗
         function closeAlert() {
-            const alertPopup = document.getElementById('alertPopup');
             const alertOverlay = document.getElementById('alertOverlay');
-            
-            alertPopup.classList.add('hidden');
             alertOverlay.classList.add('hidden');
         }
         
@@ -1286,8 +1339,26 @@ def dashboard():
         
         // 页面加载时加载数据
         document.addEventListener('DOMContentLoaded', function() {
-            // 从localStorage加载设备配置
-            loadDeviceConfigs();
+            // 确保Chart.js加载完成后再加载数据
+            if (typeof Chart === 'undefined') {
+                loadChartJS().then(() => {
+                    initializeDashboard();
+                }).catch((error) => {
+                    console.error('Chart.js加载失败:', error);
+                    document.getElementById('temperature-charts-container').innerHTML = 
+                        '<div class="loading">❌ Chart.js库加载失败，请检查 /static/chart.umd.js 文件是否存在</div>';
+                    // 即使Chart.js加载失败，也尝试加载其他数据
+                    initializeDashboard();
+                });
+            } else {
+                initializeDashboard();
+            }
+        });
+        
+        // 初始化看板
+        async function initializeDashboard() {
+            // 从服务器加载设备配置
+            await loadDeviceConfigs();
             
             loadDashboard();
             
@@ -1296,7 +1367,7 @@ def dashboard():
             
             // 启动报警监控
             startAlertMonitoring();
-        });
+        }
     </script>
 </body>
 </html>
@@ -1402,9 +1473,9 @@ def api_telemetry_recent():
                 for row in rows:
                     if row[0] is not None:  # temp_c 不为 None
                         temps.append(float(row[0]))
-                        # 格式化时间戳
+                        # 格式化时间戳，包含年月日
                         ts = row[1]
-                        timestamps.append(ts.strftime('%H:%M:%S'))
+                        timestamps.append(ts.strftime('%Y-%m-%d %H:%M:%S'))
                         # 保存完整的datetime用于时间筛选
                         full_timestamps.append(ts.isoformat())
                 
@@ -1427,6 +1498,80 @@ def api_telemetry_recent():
             except Exception as close_error:
                 logger.error(f"关闭数据库连接失败: {close_error}")
 
+@app.route("/api/device_config", methods=["GET"])
+def api_get_device_config():
+    """API: 获取所有设备的报警配置"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT device_id, alias, threshold, duration
+                FROM device_config
+            """)
+            rows = cur.fetchall()
+            
+            configs = {}
+            for row in rows:
+                configs[row[0]] = {
+                    'alias': row[1] or '',
+                    'threshold': float(row[2]),
+                    'duration': int(row[3])
+                }
+            
+            return jsonify(configs)
+            
+    except Exception as e:
+        logger.error(f"获取设备配置失败: {e}")
+        return jsonify({'error': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+@app.route("/api/device_config/<device_id>", methods=["POST"])
+def api_save_device_config(device_id):
+    """API: 保存单个设备的报警配置"""
+    conn = None
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': '无效的请求数据'}), 400
+        
+        alias = data.get('alias', '')
+        threshold = float(data.get('threshold', 50.0))
+        duration = int(data.get('duration', 10))
+        
+        # 验证参数
+        if threshold < 0 or threshold > 150:
+            return jsonify({'error': '温度阈值必须在0-150°C之间'}), 400
+        if duration < 1 or duration > 300:
+            return jsonify({'error': '持续时长必须在1-300秒之间'}), 400
+        
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            # 使用 UPSERT 语法（INSERT ... ON CONFLICT）
+            cur.execute("""
+                INSERT INTO device_config (device_id, alias, threshold, duration, updated_at)
+                VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (device_id) 
+                DO UPDATE SET 
+                    alias = EXCLUDED.alias,
+                    threshold = EXCLUDED.threshold,
+                    duration = EXCLUDED.duration,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (device_id, alias, threshold, duration))
+            conn.commit()
+        
+        logger.info(f"设备 {device_id} 配置已更新: 别名={alias}, 阈值={threshold}°C, 持续时长={duration}秒")
+        return jsonify({'success': True, 'message': '配置保存成功'})
+        
+    except Exception as e:
+        logger.error(f"保存设备配置失败: {e}")
+        return jsonify({'error': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
 @app.route("/health")
 def health():
     """健康检查接口"""
@@ -1439,6 +1584,9 @@ if __name__ == "__main__":
     if not PG_URI:
         logger.error("❌ 环境变量 PG_URI 未设置")
         exit(1)
+    
+    # 初始化设备配置表
+    init_device_config_table()
     
     logger.info(f"🚀 看板服务器启动成功，监听端口: {PORT}")
     logger.info(f"📍 访问地址: http://localhost:{PORT}")
