@@ -120,6 +120,41 @@ CREATE INDEX IF NOT EXISTS idx_device_status_device_id ON device_status(device_i
 CREATE INDEX IF NOT EXISTS idx_device_status_last_seen ON device_status(last_seen);
 ```
 
+### 6. 配置钉钉温度异常报警（可选）
+
+如果需要在温度异常时自动向钉钉群发送报警消息：
+
+1. 在钉钉群中添加 **自定义机器人**，记录下机器人的 `Webhook` 地址，并根据需要启用“加签”和“关键词”等安全设置。  
+2. 编辑 `.env`（参考 `env_example.txt`），增加以下配置：
+
+```env
+# 钉钉机器人 Webhook（必填）
+DINGTALK_WEBHOOK=https://oapi.dingtalk.com/robot/send?access_token=your_token_here
+
+# 若启用了“加签”安全方式，则需要配置机器人对应的 secret（可选但推荐）
+DINGTALK_SECRET=your_dingtalk_sign_secret_here
+
+# 机器人安全设置中配置的“关键词”（推荐），所有报警消息会自动带上此前缀
+DINGTALK_KEYWORD=温度报警
+```
+
+3. 安装依赖并运行：
+
+```bash
+pip install -r requirements.txt
+
+# 可先单独测试钉钉机器人配置
+python dingtalk_notifier.py
+```
+
+4. 启动看板服务（示例）：
+
+```bash
+python dashboard.py
+```
+
+当前端检测到某个设备温度超过阈值并持续达到设定时长时，浏览器会弹出报警窗口，同时通过后端的钉钉机器人向对应群发送一条“温度异常报警”消息。
+
 ### 6. 上传 ESP32 固件
 
 使用 Arduino IDE 或 PlatformIO 将 `0924_sketch_sep24a_OTA.ino` 上传到 ESP32 设备。

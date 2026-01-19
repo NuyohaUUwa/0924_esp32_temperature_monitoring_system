@@ -7,6 +7,8 @@ import psycopg2
 from flask import Flask, render_template_string, jsonify, request
 from dotenv import load_dotenv
 
+from dingtalk_notifier import send_dingtalk_text
+
 # 加载环境变量
 load_dotenv()
 
@@ -1318,12 +1320,63 @@ def dashboard():
             
             const deviceNames = devices.map(d => formatDeviceName(d.deviceId)).join(', ');
             console.warn(`温度警报触发！设备: ${deviceNames}`, devices);
+            
+            // 触发后端钉钉通知（异步，不阻塞前端弹窗）
+            try {
+                notifyDingtalk(devices);
+            } catch (e) {
+                console.error('调用钉钉通知失败:', e);
+            }
         }
         
         // 关闭报警弹窗
         function closeAlert() {
             const alertOverlay = document.getElementById('alertOverlay');
             alertOverlay.classList.add('hidden');
+        }
+
+        // 调用后端接口，通知钉钉
+        async function notifyDingtalk(devices) {
+            if (!devices || devices.length === 0) {
+                return;
+            }
+
+            try {
+                const payload = {
+                    devices: devices.map(d => {
+                        const config = getDeviceConfig(d.deviceId);
+                        return {
+                            device_id: d.deviceId,
+                            alias: config.alias || '',
+                            temperature: d.temperature,
+                            threshold: d.threshold,
+                            duration: d.duration
+                        };
+                    })
+                };
+
+                const resp = await fetch('/api/notify_alert', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    console.error('后端钉钉通知接口返回错误:', resp.status, err);
+                } else {
+                    const data = await resp.json().catch(() => ({}));
+                    if (!data.success) {
+                        console.warn('钉钉通知接口响应未标记为 success:', data);
+                    } else {
+                        console.log('已通过后端触发钉钉温度报警通知。');
+                    }
+                }
+            } catch (error) {
+                console.error('调用 /api/notify_alert 接口异常:', error);
+            }
         }
         
         // 启动报警监控
@@ -1571,6 +1624,69 @@ def api_save_device_config(device_id):
     finally:
         if conn:
             conn.close()
+
+
+@app.route("/api/notify_alert", methods=["POST"])
+def api_notify_alert():
+    """
+    API: 接收前端温度报警信息，并通过钉钉机器人推送到群里。
+
+    期望请求体 JSON 示例:
+    {
+        "devices": [
+            {
+                "device_id": "AE1-01",
+                "alias": "1号主控柜",
+                "temperature": 78.5,
+                "threshold": 60.0,
+                "duration": 45
+            }
+        ]
+    }
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        devices = data.get("devices")
+
+        if not isinstance(devices, list) or not devices:
+            return jsonify({"error": "请求体中必须包含非空的 devices 列表"}), 400
+
+        # 组装钉钉报警消息内容（多设备合并为一条消息）
+        lines = ["【温度异常报警】检测到以下设备温度持续超过阈值："]
+        for d in devices:
+            device_id = d.get("device_id") or "未知设备"
+            alias = d.get("alias") or ""
+            temp = d.get("temperature")
+            threshold = d.get("threshold")
+            duration = d.get("duration")
+
+            # 名称部分
+            if alias:
+                name = f"{device_id}({alias})"
+            else:
+                name = device_id
+
+            detail_parts = []
+            if isinstance(temp, (int, float)):
+                detail_parts.append(f"当前 {temp:.2f}°C")
+            if isinstance(threshold, (int, float)):
+                detail_parts.append(f"阈值 {threshold:.2f}°C")
+            if isinstance(duration, (int, float, int)):
+                detail_parts.append(f"已持续 {int(duration)} 秒")
+
+            detail = "，".join(detail_parts) if detail_parts else "具体数值未知"
+            lines.append(f"- 设备 {name}: {detail}")
+
+        content = "\n".join(lines)
+        success = send_dingtalk_text(content)
+
+        if not success:
+            return jsonify({"error": "钉钉消息发送失败，请检查服务端日志和 DINGTALK 配置"}), 500
+
+        return jsonify({"success": True})
+    except Exception as e:
+        logger.error(f"处理 /api/notify_alert 请求失败: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/health")
 def health():

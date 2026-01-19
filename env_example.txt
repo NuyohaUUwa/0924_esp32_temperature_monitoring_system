@@ -18,3 +18,14 @@ DEVICE_STATUS_UPDATE_INTERVAL=30
 
 # 设备离线阈值（秒）
 DEVICE_OFFLINE_THRESHOLD=300
+
+# 钉钉机器人 Webhook（温度异常报警用，需在钉钉群自定义机器人配置中获取）
+# 例：https://oapi.dingtalk.com/robot/send?access_token=xxxxxx
+DINGTALK_WEBHOOK=https://oapi.dingtalk.com/robot/send?access_token=your_token_here
+
+# （可选）钉钉机器人安全设置中的加签 secret，如果启用了“加签”安全方式则必须配置
+DINGTALK_SECRET=your_dingtalk_sign_secret_here
+
+# （建议）钉钉机器人安全设置的“关键词”，此处配置后，所有报警消息会自动加上该前缀
+# 例如设置为“温度报警”，则实际发送内容为：“温度报警 【温度异常报警】设备 ...”
+DINGTALK_KEYWORD=温度报警
