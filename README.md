@@ -30,7 +30,7 @@ Web 监控看板 (dashboard.py)
 
 ## 环境要求
 
-- Python 3.7+
+- 推荐 Python 3.11+
 - PostgreSQL 12+
 - ESP32 开发板
 - WiFi 网络
@@ -155,7 +155,7 @@ python dashboard.py
 
 当前端检测到某个设备温度超过阈值并持续达到设定时长时，浏览器会弹出报警窗口，同时通过后端的钉钉机器人向对应群发送一条“温度异常报警”消息。
 
-### 6. 上传 ESP32 固件
+### 7. 上传 ESP32 固件
 
 使用 Arduino IDE 或 PlatformIO 将 `0924_sketch_sep24a_OTA.ino` 上传到 ESP32 设备。
 
@@ -170,6 +170,15 @@ python dashboard.py
 - `/config` - Web 配置页面（Basic Auth，登录后可在 Web 界面配置参数）
 - `/update` - Web OTA 固件升级页面
 - 自动上传温度数据到服务器
+
+**连接与登录步骤（SoftAP）**  
+1. 设备上电后会同时开启 STA + SoftAP。  
+2. 在手机/电脑 WiFi 列表中找到热点，使用密码连接。  
+3. 打开浏览器访问：  
+   - 状态页：`http://192.168.4.1/`  
+   - 配置页：`http://192.168.4.1/config`  
+   - OTA：`http://192.168.4.1/update`  
+4. 进入 `/config` 或 `/update` 会弹出 Basic Auth 登录框。  
 
 > 💡 **提示**：除了在代码中修改，大部分配置也可以通过 Web 配置页面 `/config` 进行设置，设置后会自动保存到设备 NVS 中。
 
@@ -211,16 +220,22 @@ python dashboard.py
 http://localhost:8080
 ```
 
+## 测试与验证
+
+- 当前无自动化测试。若新增逻辑或数据处理，请补充最小化测试（如 `tests/` + pytest）并说明运行方式。
+- 修改后建议手动验证：`/health`、`/api/telemetry` 以及看板相关接口/页面是否正常。
+
 ## 项目结构
 
 ```
 0924_ESP32/
-├── 0924_sketch_sep24a_OTA.ino  # ESP32 Arduino 固件
+├── 0924_sketch_sep24a_OTA.ino  # ESP32 Arduino 固件（OTA + DS18B20）
 ├── dashboard.py                 # Web 监控看板服务
 ├── lightweight_server.py        # API 数据接收服务
 ├── device_status_updater.py     # 设备状态更新服务
-├── main.py                      # 主服务入口
-├── start_services.py            # 服务启动脚本
+├── dingtalk_notifier.py         # 钉钉通知服务
+├── start_services.py            # 多服务启动脚本
+├── static/                      # 前端静态资源（Chart.js）
 ├── env_example.txt              # 环境变量配置示例
 ├── requirements.txt             # Python 依赖列表
 ├── README.md                    # 项目说明文档
