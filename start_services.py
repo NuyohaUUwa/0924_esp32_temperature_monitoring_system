@@ -11,6 +11,7 @@ import signal
 import os
 import time
 from pathlib import Path
+import runpy
 
 # 在Windows上设置标准输出为UTF-8编码
 if sys.platform == "win32":
@@ -24,6 +25,20 @@ if sys.platform == "win32":
 
 # 服务进程列表
 processes = []
+
+SERVICE_MODULES = {
+    "dashboard": "dashboard",
+    "device_status_updater": "device_status_updater",
+    "lightweight_server": "lightweight_server",
+}
+
+def run_service_module(service_name):
+    """Run a service module in-process (used by frozen executable)."""
+    module_name = SERVICE_MODULES.get(service_name)
+    if not module_name:
+        print(f"Unknown service: {service_name}")
+        sys.exit(1)
+    runpy.run_module(module_name, run_name="__main__")
 
 def signal_handler(sig, frame):
     """处理 Ctrl+C 信号，优雅地关闭所有服务"""
@@ -47,7 +62,7 @@ def signal_handler(sig, frame):
     print("所有服务已停止")
     sys.exit(0)
 
-def start_service(script_name, description):
+def start_service_legacy(script_name, description):
     """启动一个Python服务"""
     print(f"\n{'='*60}")
     print(f"正在启动: {description}")
@@ -80,6 +95,39 @@ def start_service(script_name, description):
         return process
     except Exception as e:
         print(f"❌ 启动 {description} 时出错: {e}")
+        return None
+
+def start_service(service_name, description, script_name):
+    """Start a service process, handling frozen executables."""
+    print(f"\n{'='*60}")
+    print(f"Starting: {description}")
+    print(f"Script: {script_name}")
+    print(f"{'='*60}")
+
+    try:
+        if getattr(sys, "frozen", False):
+            command = [sys.executable, "--service", service_name]
+        else:
+            script_path = Path(__file__).parent / script_name
+            if not script_path.exists():
+                print(f"Error: file not found: {script_path}")
+                return None
+            command = [sys.executable, "-u", str(script_path)]
+
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=0
+        )
+
+        processes.append(process)
+        print(f"OK: {description} started (PID: {process.pid})")
+        return process
+    except Exception as e:
+        print(f"Error starting {description}: {e}")
         return None
 
 def monitor_processes():
@@ -139,6 +187,16 @@ def monitor_processes():
 
 def main():
     """主函数"""
+    if "--service" in sys.argv:
+        try:
+            index = sys.argv.index("--service")
+            service_name = sys.argv[index + 1]
+        except (ValueError, IndexError):
+            print("Missing service name after --service")
+            sys.exit(1)
+        run_service_module(service_name)
+        return
+
     print("="*60)
     print("ESP32 服务启动器")
     print("="*60)
@@ -156,15 +214,15 @@ def main():
     print("\n开始启动服务...\n")
     
     # 先启动状态更新器（后台服务）
-    start_service("device_status_updater.py", "设备状态更新器")
+    start_service("device_status_updater", "设备状态更新器", "device_status_updater.py")
     time.sleep(2)  # 等待状态更新器初始化
     
     # 再启动服务器（API服务）
-    start_service("lightweight_server.py", "轻量级服务器")
+    start_service("lightweight_server", "轻量级服务器", "lightweight_server.py")
     time.sleep(2)  # 等待服务器初始化
     
     # 最后启动仪表板（Web界面）
-    start_service("dashboard.py", "设备监控看板")
+    start_service("dashboard", "设备监控看板", "dashboard.py")
     
     # 检查是否所有服务都成功启动
     failed = [i for i, p in enumerate(processes) if p is None]
