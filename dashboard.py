@@ -778,12 +778,12 @@ def dashboard():
                     <div class="device-info">
                         <div class="info-item">
                             <span class="info-label">固件版本</span>
-                            <span class="info-value">${device.fw_version || 'v1.0'}</span>
+                            <span class="info-value">${isOnline ? (device.fw_version || 'v1.0') : '--'}</span>
                         </div>
                         <div class="info-item">
                             <span class="info-label">IP 地址</span>
                             <span class="info-value">
-                                <a href="http://${device.ip}" target="_blank" style="color: var(--primary); text-decoration: none;">${device.ip}</a>
+                                ${isOnline ? `<a href="http://${device.ip}" target="_blank" style="color: var(--primary); text-decoration: none;">${device.ip}</a>` : '--'}
                             </span>
                         </div>
                         <div class="info-item">
@@ -792,7 +792,7 @@ def dashboard():
                         </div>
                         <div class="info-item">
                             <span class="info-label">报警阈值</span>
-                            <span class="info-value">${config.threshold}°C</span>
+                            <span class="info-value">${isOnline ? config.threshold + '°C' : '--'}</span>
                         </div>
                         <div class="info-item info-item-full">
                             <span class="info-label">最后通信时间</span>

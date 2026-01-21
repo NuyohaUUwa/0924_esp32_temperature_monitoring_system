@@ -99,10 +99,10 @@ if __name__ == "__main__":
         format="%(asctime)s - %(levelname)s - %(message)s",
     )
 
-    test_content = input("请输入要发送到钉钉群的测试消息内容（回车发送）: ").strip()
-    if not test_content:
-        print("内容为空，已取消发送。")
-    else:
-        ok = send_dingtalk_text(test_content)
-        print("发送结果:", "成功" if ok else "失败")
+    # test_content = input("请输入要发送到钉钉群的测试消息内容（回车发送）: ").strip()
+    # if not test_content:
+    #     print("内容为空，已取消发送。")
+    # else:
+    #     ok = send_dingtalk_text(test_content)
+    #     print("发送结果:", "成功" if ok else "失败")
 
