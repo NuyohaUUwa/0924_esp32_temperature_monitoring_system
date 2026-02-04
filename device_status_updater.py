@@ -24,6 +24,7 @@ BEIJING_TZ = timezone(timedelta(hours=8))
 PG_URI = os.getenv("PG_URI")
 UPDATE_INTERVAL = int(os.getenv("DEVICE_STATUS_UPDATE_INTERVAL", "30"))  # 更新间隔（秒）
 OFFLINE_THRESHOLD = int(os.getenv("DEVICE_OFFLINE_THRESHOLD", "300"))  # 离线阈值（秒）
+OFFLINE_CONSECUTIVE_THRESHOLD = int(os.getenv("DEVICE_OFFLINE_CONSECUTIVE_THRESHOLD", "3"))  # 连续失败次数达此后才判离线
 
 # 配置日志
 logging.basicConfig(
@@ -41,7 +42,7 @@ logging.getLogger('psycopg2').setLevel(logging.WARNING)
 
 # 数据库连接池
 class SimpleConnectionPool:
-    def __init__(self, uri, min_conn=2, max_conn=5):
+    def __init__(self, uri, min_conn=5, max_conn=15):
         self.uri = uri
         self.min_conn = min_conn
         self.max_conn = max_conn
@@ -94,6 +95,10 @@ class SimpleConnectionPool:
 
 # 全局连接池
 db_pool = SimpleConnectionPool(PG_URI)
+
+# 每设备连续 ping 失败次数，key=device_id
+_device_consecutive_failures = {}
+_failures_lock = threading.Lock()
 
 def ping_host(ip):
     """
@@ -160,39 +165,48 @@ def update_device_status():
                 
                 # 执行ping检查
                 is_online, response_time = ping_host(ip)
-                
-                # 获取当前状态
-                cur.execute("""
-                    SELECT status FROM device_status WHERE device_id = %s
-                """, (device_id,))
-                result = cur.fetchone()
-                current_status = result[0] if result else 'unknown'
-                
-                # 更新状态
-                new_status = 'online' if is_online else 'offline'
-                # 使用北京时间（UTC+8）
                 current_time = datetime.now(BEIJING_TZ)
-                
-                if new_status != current_status:
-                    status_changes += 1
-                    logger.info(f"设备 {device_id} ({ip}) 状态变更: {current_status} -> {new_status}")
-                
-                # 更新数据库
+
                 if is_online:
+                    # ping 成功：清零失败计数，标记 online
+                    with _failures_lock:
+                        _device_consecutive_failures[device_id] = 0
+                    cur.execute("""
+                        SELECT status FROM device_status WHERE device_id = %s
+                    """, (device_id,))
+                    result = cur.fetchone()
+                    current_status = result[0] if result else 'unknown'
+                    if 'online' != current_status:
+                        status_changes += 1
+                        logger.info(f"设备 {device_id} ({ip}) 状态变更: {current_status} -> online")
                     online_count += 1
-                    # 如果设备在线，更新last_seen
                     cur.execute("""
                         UPDATE device_status 
                         SET status = 'online', last_seen = %s, ip = %s
                         WHERE device_id = %s
                     """, (current_time, ip, device_id))
                 else:
-                    offline_count += 1
-                    cur.execute("""
-                        UPDATE device_status 
-                        SET status = 'offline'
-                        WHERE device_id = %s
-                    """, (device_id,))
+                    # ping 失败：累加失败计数，仅达到阈值时才标记 offline
+                    with _failures_lock:
+                        _device_consecutive_failures[device_id] = _device_consecutive_failures.get(device_id, 0) + 1
+                        failure_count = _device_consecutive_failures[device_id]
+
+                    if failure_count >= OFFLINE_CONSECUTIVE_THRESHOLD:
+                        cur.execute("""
+                            SELECT status FROM device_status WHERE device_id = %s
+                        """, (device_id,))
+                        result = cur.fetchone()
+                        current_status = result[0] if result else 'unknown'
+                        new_status = 'offline'
+                        if new_status != current_status:
+                            status_changes += 1
+                            logger.info(f"设备 {device_id} ({ip}) 连续 {failure_count} 次 ping 失败，标记为离线")
+                        offline_count += 1
+                        cur.execute("""
+                            UPDATE device_status 
+                            SET status = 'offline'
+                            WHERE device_id = %s
+                        """, (device_id,))
             
             conn.commit()
             
@@ -214,7 +228,7 @@ def update_device_status():
 
 def device_status_worker():
     """设备状态更新工作线程"""
-    logger.info(f"设备状态更新器启动 - 更新间隔: {UPDATE_INTERVAL}秒 (使用ping方式检测)")
+    logger.info(f"设备状态更新器启动 - 更新间隔: {UPDATE_INTERVAL}秒, 连续失败 {OFFLINE_CONSECUTIVE_THRESHOLD} 次后判离线 (使用ping方式检测)")
     
     while True:
         try:
