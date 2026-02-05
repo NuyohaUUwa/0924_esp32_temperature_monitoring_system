@@ -46,6 +46,12 @@ struct AppConfig {
   // 新增：可配置 STA Wi-Fi（默认用编译期常量）
   char     wifiSsid[33] = "";                   // 最长32字节+结尾
   char     wifiPass[65] = "";                   // 最长64字节+结尾
+
+  // 定时重启参数：连接成功/失败时重启间隔(秒)，连续失败达此次数才判未连接
+  uint32_t restartSecWhenConnected   = 14400;   // 默认4小时
+  uint32_t restartSecWhenDisconnected = 600;    // 默认10分钟
+  uint8_t  restartFailThreshold      = 3;      // 默认3
+
   AppConfig() {
     strlcpy(wifiSsid, WIFI_SSID, sizeof(wifiSsid));
     strlcpy(wifiPass, WIFI_PASS, sizeof(wifiPass)); // 允许为空字符串
@@ -66,6 +72,7 @@ unsigned long lastUploadMs = 0;
 int lastPostCode = -1;
 bool lastPostOk = false;
 unsigned long lastPostAtMs = 0;
+int consecutivePostFailures = 0;  // 连续上传失败次数，成功时清零
 
 // --- 全局变量 ---
 bool needReboot   = false;
@@ -97,6 +104,10 @@ void loadConfig() {
   prefs.getString("wifi_ssid", cfg.wifiSsid, sizeof(cfg.wifiSsid));
   prefs.getString("wifi_pass", cfg.wifiPass, sizeof(cfg.wifiPass));
 
+  cfg.restartSecWhenConnected   = prefs.getUInt("restart_sec_ok", cfg.restartSecWhenConnected);
+  cfg.restartSecWhenDisconnected = prefs.getUInt("restart_sec_fail", cfg.restartSecWhenDisconnected);
+  cfg.restartFailThreshold      = (uint8_t)prefs.getUInt("restart_fail_thr", cfg.restartFailThreshold);
+
   prefs.end();
 }
 
@@ -111,6 +122,10 @@ void saveConfig() {
   // 新增：Wi-Fi STA 配置
   prefs.putString("wifi_ssid", cfg.wifiSsid);
   prefs.putString("wifi_pass", cfg.wifiPass);
+
+  prefs.putUInt("restart_sec_ok", cfg.restartSecWhenConnected);
+  prefs.putUInt("restart_sec_fail", cfg.restartSecWhenDisconnected);
+  prefs.putUInt("restart_fail_thr", cfg.restartFailThreshold);
 
   prefs.end();
 }
@@ -211,6 +226,12 @@ void handleConfigPage() {
       "<input name='apiPort' type='number' min='1' max='65535' value='" + String(cfg.apiPort) + "' required><br><br>"
       "<label>API Key：</label><br>"
       "<input name='apiKey' value='" + String(cfg.apiKey) + "'><br><br>"
+      "<label>连接成功时重启间隔(秒，4h=14400)：</label><br>"
+      "<input name='restartSecWhenConnected' type='number' min='60' max='604800' value='" + String(cfg.restartSecWhenConnected) + "' required><br><br>"
+      "<label>连接失败时重启间隔(秒，10min=600)：</label><br>"
+      "<input name='restartSecWhenDisconnected' type='number' min='60' max='7200' value='" + String(cfg.restartSecWhenDisconnected) + "' required><br><br>"
+      "<label>连续失败判定阈值(1-10，达此次数才视为未连接)：</label><br>"
+      "<input name='restartFailThreshold' type='number' min='1' max='10' value='" + String(cfg.restartFailThreshold) + "' required><br><br>"
       "<button type='submit'>保存</button>"
     "</form>"
     "<p><a href='/'>&larr; 返回首页</a> · <a href='/update'>OTA</a></p>"
@@ -237,6 +258,16 @@ void handleConfigSave() {
   String wifiSsid = server.arg("wifiSsid");
   String wifiPass = server.arg("wifiPass"); // 允许为空
 
+  long restartOk   = server.arg("restartSecWhenConnected").toInt();
+  long restartFail = server.arg("restartSecWhenDisconnected").toInt();
+  long failThr     = server.arg("restartFailThreshold").toInt();
+  if (restartOk < 60) restartOk = 60;
+  if (restartOk > 604800) restartOk = 604800;
+  if (restartFail < 60) restartFail = 60;
+  if (restartFail > 7200) restartFail = 7200;
+  if (failThr < 1) failThr = 1;
+  if (failThr > 10) failThr = 10;
+
   bool wifiChanged = (wifiSsid != String(cfg.wifiSsid)) || (wifiPass != String(cfg.wifiPass));
 
   wifiSsid.toCharArray(cfg.wifiSsid, sizeof(cfg.wifiSsid));
@@ -248,6 +279,9 @@ void handleConfigSave() {
   apiHost.toCharArray(cfg.apiHost, sizeof(cfg.apiHost));
   cfg.apiPort = (uint16_t)p;
   apiKey.toCharArray(cfg.apiKey, sizeof(cfg.apiKey));
+  cfg.restartSecWhenConnected   = (uint32_t)restartOk;
+  cfg.restartSecWhenDisconnected = (uint32_t)restartFail;
+  cfg.restartFailThreshold      = (uint8_t)failThr;
 
   // 持久化
   saveConfig();
@@ -323,6 +357,11 @@ bool postTelemetry(float tempC) {
   lastPostAtMs = millis();
   lastPostCode = code;
   lastPostOk   = (code >= 200 && code < 300);
+  if (lastPostOk) {
+    consecutivePostFailures = 0;
+  } else {
+    consecutivePostFailures++;
+  }
 
   Serial.printf("[POST] %s -> code=%d, resp=%s\n", url.c_str(), code, resp.c_str());
   return lastPostOk;
@@ -434,6 +473,15 @@ void loop() {
   if (now - lastUploadMs >= cfg.uploadMs) {
     lastUploadMs = now;
     postTelemetry(lastTempC);
+  }
+
+  // 定时重启：排除偶尔失败，仅连续失败达阈值才用短间隔
+  bool isDisconnected = (lastPostAtMs == 0) || (consecutivePostFailures >= cfg.restartFailThreshold);
+  unsigned long restartThreshold = isDisconnected ? cfg.restartSecWhenDisconnected : cfg.restartSecWhenConnected;
+  unsigned long uptimeSec = millis() / 1000;
+  if (uptimeSec >= restartThreshold) {
+    Serial.printf("Uptime %lu s >= %lu s (conn=%s), restarting...\n", uptimeSec, restartThreshold, isDisconnected ? "fail" : "ok");
+    ESP.restart();
   }
 
   // 延迟重启：确保上一个HTTP响应已经完整发回浏览器
